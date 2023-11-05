@@ -1,0 +1,10 @@
+Folder PATH listing for volume New Volume
+Volume serial number is XXXX-XXXX
+D:.
+--- data
+    /ideal
+    -	/annotations
+    -   /images
+    /non_ideal
+    -   /annotations
+    -   /images
