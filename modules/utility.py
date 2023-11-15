@@ -10,7 +10,7 @@ class Activation:
     def __init__(self, threshold: np.float32, labels: list = [1, 0]):
         self._threshold = threshold
         self._labels = labels  # in the format [true, false]
-        self.label = lambda iou: self._labels[0] if iou > self._threshold else self._labels[0]
+        self.label = lambda iou: self._labels[0] if iou > self._threshold else self._labels[1]
 
     def get_threshold(self):
         return self._threshold
@@ -37,21 +37,32 @@ class RegionProposal:
         self._annotations = annotations
         self._activation = Activation(threshold = iou_threshold)
 
+    def _get_bounding_box(self, annotation: np.ndarray):
+        assert len(annotation) == 4
+        x1, y1, height, width = annotation
+        x2 = x1 + width
+        y2 = y1 + height
+        return np.array([x1, x2, y1, y2])
+
     def iou(self, t: np.ndarray, p: np.ndarray):
         """
         Calculate the IoU of t and p. `t` is ground truth and `p` is proposal.
         """
         assert t.shape == p.shape
+        # Find original bounding box
+        t = self._get_bounding_box(t)
+        p = self._get_bounding_box(p)
+
         # Find bounding box coordinate of intesection (i)
         i_x1 = max(t[0], p[0])
         i_y1 = max(t[1], p[1])
         i_x2 = min(t[2], p[2])
         i_y2 = min(t[3], p[3])
         # Area of intersection bounding box
-        i_area = (i_x2 - i_x1) * (i_y2 - i_y1)
+        i_area = np.abs(i_x2 - i_x1) * np.abs(i_y2 - i_y1)
         # truth and prediction areas
-        t_area = (t[2] - t[0]) * (t[3] - t[1])
-        p_area = (p[2] - p[0]) * (p[3] - p[1])
+        t_area = np.abs(t[2] - t[0]) * np.abs(t[3] - t[1])
+        p_area = np.abs(p[2] - p[0]) * np.abs(p[3] - p[1])
         # Measure
         u_area = t_area + p_area - i_area
         iou = round(i_area / u_area, 2)
@@ -64,7 +75,7 @@ class RegionProposal:
         """
         selective_search = SelectiveSearch()
         selective_search.setBaseImage(self._image)
-        selective_search.switchToSelectiveSearchQuality()
+        selective_search.switchToSelectiveSearchFast()
         self._bounding_proposals = selective_search.process()
 
         self._region_proposals = []
@@ -84,12 +95,12 @@ class RegionProposal:
             for p in self._bounding_proposals:
                 if k == n and n != 0:
                     break
-                iou = self.iou(t, p)
+                iou = self.iou(np.asarray(t), p)
                 label = self._activation.label(iou)
                 if label == 1:
-                    best_proposals.append((p, iou))
+                    best_proposals.append((p, iou, label))
                     k += 1
-        return best_proposals
+        return sorted(best_proposals, key = lambda x: x[1], reverse = True)
 
     def get_proposals(self):
         """
