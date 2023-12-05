@@ -18,6 +18,15 @@ import matplotlib.pyplot as plt
 import cv2
 import argparse
 from tqdm import tqdm
+import keras as KE
+from sklearn.model_selection import train_test_split
+from sklearn.metrics import accuracy_score
+
+import tensorflow as tf
+from tensorflow.keras.applications import ResNet50
+from tensorflow.keras.models import Sequential
+from tensorflow.keras.layers import Dense, Flatten, Dropout
+from tensorflow.keras.optimizers import Adam
 
 # Import local files
 from modules.parser import *
@@ -73,6 +82,24 @@ def intersection_over_union(bBox1, bBox2):
     assert iou <= 1.0
     return iou
 
+def encode(label: int):
+    """
+    Utility function to encode labels
+    """
+    code = [0, 0]
+    index = 0 if label == 0 else 1
+    code[index] = 1.0
+    return np.array(code)
+
+def get_region(image, rect: [], target_shape: set = (224, 224)):
+    """
+    Helper function to regions list of traget_shape
+    """
+    x1, y1, x2, y2 = rect
+    region = image[y1:y2, x1:x2]
+    region = cv2.resize(region, target_shape)
+    return region
+
 ############################################################
 #  Dataset generation
 ############################################################
@@ -126,6 +153,8 @@ class DatasetGenerator:
             
             image = cv2.imread(file_name)
             rects = SSProposedRegions(image)
+            train_images = []
+            train_labels = []
 
             for i in range(len(annotations)):
                 x1, y1, width, height = np.asarray(annotations[i], dtype=np.int32)  # format: (start_x, start_y, width, height)
@@ -136,6 +165,8 @@ class DatasetGenerator:
                 roi = cv2.resize(roi, target_shape)
                 filename = str(bBox) + ".jpg"
                 cv2.imwrite(os.path.join(outputPath, true_target, filename), roi)
+                train_images.append(roi)
+                train_labels.append(1)
 
                 # false RoI
                 SSbBox = 0
@@ -156,6 +187,8 @@ class DatasetGenerator:
                             # filename = str(bBox) + "_" + str(SSbBox) + ".jpg"
                             # cv2.imwrite(os.path.join(outputPath, false_target, filename), false_roi)
                             SSbBox += 1
+                            train_images.append(false_roi)
+                            train_labels.append(0)
                 bBox += 1
 
         # Remove duplicate false images
@@ -169,11 +202,24 @@ class DatasetGenerator:
         print("Found {} unique images out of {} false images.".format(len(unique_false_images), len(false_images)))
         for i in range(len(unique_false_images)):
             cv2.imwrite(os.path.join(outputPath, false_target, str(i + 1) + ".jpg"), unique_false_images[i])
-
+            
+        print(false_images_arr.shape)
+        print(unique_false_images.shape)
         print("Exported {} RoI(s)".format(bBox))
 
-        return True
+        return train_images, train_labels
 
+############################################################
+#  Building and training model
+############################################################   
+class TrainModel:
+    """
+    Class to train RCNN model
+    """
+
+############################################################
+#  Main
+############################################################
 if __name__ == '__main__':
     
     # Parse command line arguments
@@ -213,7 +259,100 @@ if __name__ == '__main__':
     mDataset.loadDataset(args.subset)
 
     print("Saving Selective Search recommended regions of interest to {}".format(OUTPUT_DIR))
-    mDataset.saveRoIs(OUTPUT_DIR, 0.2)
+    images, labels = mDataset.saveRoIs(OUTPUT_DIR, 0.2)
+    
+    images = np.array(images)
+    labels = np.array(labels)
 
+    # encode labels
+    encoded_labels = np.array(list(map(encode, labels)))
 
+    # split training and testing image set
+    train_images, test_images, train_labels, test_labels = train_test_split(images, encoded_labels, test_size = 0.2)
+    test_images, val_images, test_labels, val_labels = train_test_split(test_images, test_labels, test_size = 0.2)
 
+    print(train_images.shape)
+    print(train_labels.shape)
+
+    # Initialize model
+    print("Building ResNet50 model")
+    model = ResNet50(weights = "imagenet", include_top = False, input_shape = (224, 224, 3))
+
+    for layer in model.layers:
+        layer.trainable = False
+
+    rcnn = Sequential([model, Flatten(), Dense(256, activation = "relu"), Dropout(0.5), Dense(2, activation = "softmax")], name="RCNN")
+
+    rcnn.compile(optimizer = Adam(learning_rate = 0.001), loss = "categorical_crossentropy", metrics = ["accuracy"])
+    rcnn.summary()
+
+    history = rcnn.fit(train_images, train_labels, epochs = 10, batch_size = 8, validation_data = (val_images, val_labels))
+
+    rcnn.save("vehicles_rcnn.h5")
+
+    y_hat = rcnn.predict(test_images)
+    rcnn.save("vehicles_rcnn.keras")
+
+    flat_y_hat = np.array(list(map(np.argmax, y_hat)))
+    flat_y = np.array(list(map(np.argmax, test_labels)))
+    score = accuracy_score(flat_y, flat_y_hat)
+    print("Score:", round(score * 100, 2))
+
+    index = np.random.randint(0, test_images.shape[0])
+    y_hat = rcnn.predict(test_images[index].reshape((-1, 224, 224, 3)))
+
+    y_hat = np.argmax(y_hat[0])
+    y = np.argmax(test_labels[index])
+    print(f"Was {y} and predicted {y_hat}")
+    plt.imshow(test_images[index])
+    plt.axis("off")
+    plt.show()
+
+    sample_image = cv2.imread("/Users/yashdave/Documents/MSc/CIS579/Project/cars.jpg", cv2.IMREAD_COLOR)
+    image = cv2.cvtColor(sample_image, cv2.COLOR_BGR2RGB)
+    plt.imshow(image)
+    plt.axis("off")
+    plt.show()
+
+    copy = sample_image.copy()
+    rects = SSProposedRegions(copy)
+
+    for rect in rects:
+        x1, y1, width, height = rect
+        x2 = x1 + width
+        y2 = y1 + height
+        cv2.rectangle(copy, (x1, y1), (x2, y2), (255, 255, 0))
+    
+    plt.imshow(copy)
+    plt.axis("off")
+    plt.show()
+
+    indices = np.random.randint(0, len(rects), 100)
+    input_rects = []
+
+    for i in indices:
+        x1, y1, width, height = rects[i]
+        x2 = x1 + width
+        y2 = y1 + height
+        input_rects.append([x1, y1, x2, y2])
+
+    regions = []
+    for rect in input_rects:
+        regions.append(get_region(image, rect))
+
+    regions = np.array(regions).reshape((-1, 224, 224, 3))
+    print(regions.shape)
+
+    predict = rcnn.predict(regions)
+    predict = np.array(list(map(np.argmax, predict)))
+
+    # Find rects that contains rectangles
+    true_indices = np.where(predict == 1)[0]
+
+    for i in true_indices:
+        x1, y1, x2, y2 = input_rects[i]
+        cv2.rectangle(copy, (x1, y1), (x2, y2), (255, 255, 0), 2)
+
+    plt.imshow(copy)
+    plt.axis("off")
+    plt.show()
