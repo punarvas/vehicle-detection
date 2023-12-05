@@ -2,3 +2,5 @@ data/
 RCNN/
 modules/__pycache__
 Mask-RCNN/Mask_RCNN-TF2-master/mask_rcnn_coco.h5
+final/output/true/*
+final/output/false/*
