@@ -1,8 +1,8 @@
 data/
 RCNN/
 modules/__pycache__
-Mask-RCNN/Mask_RCNN-TF2-master/mask_rcnn_coco.h5
-final/output/true/*
-final/output/false/*
-final/vehicles_rcnn.h5
-final/vehicles_rcnn.keras
+legacy/Mask-RCNN/Mask_RCNN-TF2-master/mask_rcnn_coco.h5
+output/true/*
+output/false/*
+vehicles_rcnn.h5
+vehicles_rcnn.keras
