@@ -7,12 +7,20 @@ By: Akash Mahajan, Yash Dave
 
 _________________________________________________________
 
-# TODO: Add run instructions here
+# Commands to train and run
+
+1. Training the model
+    a. Ideal dataset: 'python3 vehicle_detection.py train --subset=ideal' 
+    b. Non-ideal dataset: 'python3 vehicle_detection.py train --subset=non_ideal'
+
+2. Running the model to predict bounding boxes on given image
+"python3 vehicle_detection.py run --image=/path/to/image.jpg"
 
 """
 
 # Import general packages
 import os
+import sys
 import numpy as np
 import matplotlib.pyplot as plt
 import cv2
@@ -214,8 +222,90 @@ class DatasetGenerator:
 ############################################################   
 class TrainModel:
     """
-    Class to train RCNN model
-    """
+    Class to build and train RCNN model
+    """ 
+
+    def splitTrainAndTestData(self, iamges, labels, testSize):
+        """
+        Function to split the data into train and test dataset for model
+        """
+        self.images = images
+        self.labels = labels
+        self.encoded_labels = np.array(list(map(encode, self.labels)))
+
+        self.train_images, self.test_images, self.train_labels, self.test_labels = train_test_split(self.images, self.encoded_labels, test_size = testSize)
+        self.test_images, self.val_images, self.test_labels, self.val_labels = train_test_split(self.test_images, self.test_labels, test_size = testSize)
+
+    
+    def initResNet50Model(self, input_shape):
+        """
+        Function to initialize a ResNet50 model with given input_shape
+        """
+        self.input_shape = input_shape
+        self.model = ResNet50(weights = "imagenet", include_top = False, input_shape = self.input_shape)
+        for layer in self.model.layers:
+            layer.trainable = False
+
+    def groupLayers(self):
+        """
+        Function to group model layers
+        """
+        self.rcnn = Sequential([self.model, Flatten(), Dense(256, activation = "relu"), Dropout(0.5), Dense(2, activation = "softmax")], name="RCNN")
+        self.rcnn.compile(optimizer = Adam(learning_rate = 0.001), loss = "categorical_crossentropy", metrics = ["accuracy"])
+        self.rcnn.summary()
+
+    def fitModel(self):
+        """
+        Function to fit and build rcnn model
+        """
+        self.history = self.rcnn.fit(self.train_images, self.train_labels, epochs = 10, batch_size = 8, validation_data = (self.val_images, self.val_labels))
+        self.rcnn.save("vehicles_rcnn.h5")
+        self.y_hat = self.rcnn.predict(self.test_images)
+        self.rcnn.save("vehicles_rcnn.keras")
+
+    def predictBoundingBox(self, imagePath, modelPath="vehicles_rcnn.keras"):
+        # Predict bounding boxes on given image
+        rcnn = tf.keras.models.load_model("vehicles_rcnn.keras")
+        sample_image = cv2.imread(imagePath, cv2.IMREAD_COLOR)
+        image = cv2.cvtColor(sample_image, cv2.COLOR_BGR2RGB)
+
+        rects = SSProposedRegions(sample_image)
+
+        for rect in rects:
+            x1, y1, width, height = rect
+            x2 = x1 + width
+            y2 = y1 + height
+            # cv2.rectangle(copy, (x1, y1), (x2, y2), (255, 255, 0))
+
+        indices = np.random.randint(0, len(rects), 100)
+        input_rects = []
+
+        for i in indices:
+            x1, y1, width, height = rects[i]
+            x2 = x1 + width
+            y2 = y1 + height
+            input_rects.append([x1, y1, x2, y2])
+
+        regions = []
+        for rect in input_rects:
+            regions.append(get_region(image, rect))
+
+        regions = np.array(regions).reshape((-1, 224, 224, 3))
+        print(regions.shape)
+
+        predict = rcnn.predict(regions)
+        predict = np.array(list(map(np.argmax, predict)))
+
+        # Find rects that contains rectangles
+        true_indices = np.where(predict == 1)[0]
+
+        for i in true_indices:
+            x1, y1, x2, y2 = input_rects[i]
+            cv2.rectangle(sample_image, (x1, y1), (x2, y2), (255, 255, 0), 2)
+
+        plt.imshow(sample_image)
+        plt.axis("off")
+        plt.show()
 
 ############################################################
 #  Main
@@ -249,6 +339,12 @@ if __name__ == '__main__':
     elif args.command == "train":
         assert args.subset, "Provide --subset to train on ideal or non-ideal dataset"
 
+    # if run command passed output predicted bounding boxes and return
+    if args.command == "run":
+        mModel = TrainModel()
+        mModel.predictBoundingBox(args.image)
+        sys.exit()
+
     # Load dataset from given dataset path
     if args.dataset is not None:
         mDataset = DatasetGenerator(args.dataset)
@@ -264,95 +360,22 @@ if __name__ == '__main__':
     images = np.array(images)
     labels = np.array(labels)
 
-    # encode labels
-    encoded_labels = np.array(list(map(encode, labels)))
+    # Create model instance
+    mModel = TrainModel()
 
     # split training and testing image set
-    train_images, test_images, train_labels, test_labels = train_test_split(images, encoded_labels, test_size = 0.2)
-    test_images, val_images, test_labels, val_labels = train_test_split(test_images, test_labels, test_size = 0.2)
+    mModel.splitTrainAndTestData(images, labels, 0.2)
 
-    print(train_images.shape)
-    print(train_labels.shape)
+    print(mModel.train_images.shape)
+    print(mModel.train_labels.shape)
 
     # Initialize model
     print("Building ResNet50 model")
-    model = ResNet50(weights = "imagenet", include_top = False, input_shape = (224, 224, 3))
+    input_shape = (224, 224, 3) # required by ResNet50
+    mModel.initResNet50Model(input_shape)
 
-    for layer in model.layers:
-        layer.trainable = False
+    # Group layers and fit model
+    mModel.groupLayers()
 
-    rcnn = Sequential([model, Flatten(), Dense(256, activation = "relu"), Dropout(0.5), Dense(2, activation = "softmax")], name="RCNN")
-
-    rcnn.compile(optimizer = Adam(learning_rate = 0.001), loss = "categorical_crossentropy", metrics = ["accuracy"])
-    rcnn.summary()
-
-    history = rcnn.fit(train_images, train_labels, epochs = 10, batch_size = 8, validation_data = (val_images, val_labels))
-
-    rcnn.save("vehicles_rcnn.h5")
-
-    y_hat = rcnn.predict(test_images)
-    rcnn.save("vehicles_rcnn.keras")
-
-    flat_y_hat = np.array(list(map(np.argmax, y_hat)))
-    flat_y = np.array(list(map(np.argmax, test_labels)))
-    score = accuracy_score(flat_y, flat_y_hat)
-    print("Score:", round(score * 100, 2))
-
-    index = np.random.randint(0, test_images.shape[0])
-    y_hat = rcnn.predict(test_images[index].reshape((-1, 224, 224, 3)))
-
-    y_hat = np.argmax(y_hat[0])
-    y = np.argmax(test_labels[index])
-    print(f"Was {y} and predicted {y_hat}")
-    plt.imshow(test_images[index])
-    plt.axis("off")
-    plt.show()
-
-    sample_image = cv2.imread("/Users/yashdave/Documents/MSc/CIS579/Project/cars.jpg", cv2.IMREAD_COLOR)
-    image = cv2.cvtColor(sample_image, cv2.COLOR_BGR2RGB)
-    plt.imshow(image)
-    plt.axis("off")
-    plt.show()
-
-    copy = sample_image.copy()
-    rects = SSProposedRegions(copy)
-
-    for rect in rects:
-        x1, y1, width, height = rect
-        x2 = x1 + width
-        y2 = y1 + height
-        cv2.rectangle(copy, (x1, y1), (x2, y2), (255, 255, 0))
-    
-    plt.imshow(copy)
-    plt.axis("off")
-    plt.show()
-
-    indices = np.random.randint(0, len(rects), 100)
-    input_rects = []
-
-    for i in indices:
-        x1, y1, width, height = rects[i]
-        x2 = x1 + width
-        y2 = y1 + height
-        input_rects.append([x1, y1, x2, y2])
-
-    regions = []
-    for rect in input_rects:
-        regions.append(get_region(image, rect))
-
-    regions = np.array(regions).reshape((-1, 224, 224, 3))
-    print(regions.shape)
-
-    predict = rcnn.predict(regions)
-    predict = np.array(list(map(np.argmax, predict)))
-
-    # Find rects that contains rectangles
-    true_indices = np.where(predict == 1)[0]
-
-    for i in true_indices:
-        x1, y1, x2, y2 = input_rects[i]
-        cv2.rectangle(copy, (x1, y1), (x2, y2), (255, 255, 0), 2)
-
-    plt.imshow(copy)
-    plt.axis("off")
-    plt.show()
+    # Build and fit model
+    mModel.fitModel()
